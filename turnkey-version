@@ -161,8 +161,14 @@ def main() -> None:
     if args.string:
         print("STRING")
         turnkey_version = args.string
-        rootfs = ""
     else:
+        try:
+            turnkey_version = sysversion.read_file(
+                rootfs=args.rootfs, file=args.file,
+            )
+        except TurnkeyVersionError as e:
+            fatal(e)
+
         # ensure that args.file is relative to args.rootfs
         if args.file:
             rootfs = ""
