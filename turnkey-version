@@ -162,9 +162,11 @@ def main() -> None:
         print("STRING")
         turnkey_version = args.string
     else:
+        rootfs = args.rootfs if args.rootfs else "/"
+
         try:
             turnkey_version = sysversion.read_file(
-                rootfs=args.rootfs, file=args.file,
+                rootfs=rootfs, file=args.file,
             )
         except TurnkeyVersionError as e:
             fatal(e)
@@ -175,7 +177,7 @@ def main() -> None:
             v_file = os.path.abspath(args.file)
         else:
             rootfs = args.rootfs
-            v_file = _TKL_VER
+            v_file = "etc/turnkey_version"
 
         turnkey_version = sysversion.get_turnkey_version(rootfs, v_file)
     if not turnkey_version:
