@@ -27,13 +27,19 @@ def _read_file(
         rootfs: str | None = None,
         file_path: str = None,
 ) -> str:
-    """Read file.
+    """Read TurnKey Linux appliance release version file.
+
+    Notes:
+        `rootfs` & `file_path` conflict - only one (or none) should be passed.
+        `rootfs` is deprecated and slated for removal in TurnKey v20.0.
 
     Args:
         rootfs (str):
-            Path to rootfs (default '/').
+            Path to chroot; 'etc/turnkey-version' will be appended - i.e.
+            rootfs="path/to/chroot" results in
+            'file_path == path/to/chroot/etc/turnkey-version'.
         file_path (str):
-            Path to text file (default '').
+            Path to text file to read (default '/etc/turnkey_version').
 
     Returns:
         str:
@@ -41,15 +47,21 @@ def _read_file(
 
     Raises:
         TurnkeyVersionError:
-            - if both rootfs and file_path
-            file contents as a string
-    if not rootfs and not file:
+            - If both `rootfs` and `file_path` are given.
+            - `file_path` does not exist; is not a file or the user does not
+              have read permission.
+            - `file_path` is not UTF8 encoded plain text file containing
+              expected text - should only contain TurnKey Linux version string.
+
+    """
+    if not rootfs and not file_path:
         raise TurnkeyVersionError("one of rootfs or file path are required")
-    elif not rootfs and not file:
+    if rootfs and file_path:
         raise TurnkeyVersionError("only one of rootfs/file path allowed")
     elif rootfs:
-        file = join(rootfs, "etc/turnkey_version")
-    assert file is not None
+        file_path = join(rootfs, "etc/turnkey_version")
+    else:
+        file_path = file_path if file_path else "/etc/turnkey_version"
     try:
         with open(file) as fob:
             return fob.read().strip()
@@ -63,30 +75,49 @@ def _read_file(
         raise TurnkeyVersionError from e
 
 
-def _run_debian_cmd(command: list[str], rootfs: str = "/") -> str:
-    """Run Debian command - in chroot if rootfs != '/'; return stdout."""
+def _run_debian_cmd(command: list[str], chrootfs: str | None = None) -> str:
+    """Run Debian command via subprocess on system or in chroot.
+
+    If `chrootfs` given, `command` will be in the chroot, otherwise will run on
+    the host.
+
+    Returns:
+        str:
+            stdout of command
+
+    Raises:
+        TurnkeyVersionError:
+            If command fails. If run within chroot, it is the success/failure
+            of the chroot command itself, not the command to be run.
+
+    """
+    rootfs = chrootfs if chrootfs else "/"
+    cmd = command
     if rootfs != "/":
-        comm = ["chroot", rootfs, *command]
-    proc = subprocess.run(comm, capture_output=True, text=True)
+        cmd = ["chroot", rootfs, *command]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
-        if comm[0] == "chroot":
-            command[0] = f"chroot {command[0]}"
-        raise TurnkeyVersionError(f"{command[0]} failed: '{proc.stderr}'")
+        comm = " ".join(cmd)
+        raise TurnkeyVersionError(f"{comm} failed: '{proc.stderr}'")
     return proc.stdout.rstrip()
 
 
-def get_debian_codename(rootfs: str = "/") -> str:
+def get_debian_codename(chrootfs: str | None = None) -> str:
     """Return Debian codename of the system (leverages lsb_release)."""
-    return _run_debian_cmd(["lsb_release", "--short", "--codename"], rootfs)
+    return _run_debian_cmd(["lsb_release", "--short", "--codename"], chrootfs)
 
 
-def get_debian_arch(rootfs: str = "/") -> str:
+def get_debian_arch(chrootfs: str | None = None) -> str:
     """Return Debian codename of the system (leverages dpkg)."""
-    return _run_debian_cmd(["dpkg", "--print-architecture"], rootfs)
+    return _run_debian_cmd(["dpkg", "--print-architecture"], chrootfs)
 
 
 def parse_tkl_version(turnkey_version: str) -> tuple[str, str, str, str]:
     """Parse TurnKey version string.
+
+    Parse TKL version string ('turnkey-' prefix is stripped if it exists).
+    It is assumed that `turnkey_version` is a valid version. As only the string
+    format is validated, not the content.
 
     Args:
         turnkey_version (str):
@@ -95,58 +126,42 @@ def parse_tkl_version(turnkey_version: str) -> tuple[str, str, str, str]:
     Returns:
         tuple[str, str, str, str]:
             appliance name, turnkey version no, Debian codename, architechture
+            E.g. ("core", "19.0", "trixie", "amd64")
 
     Raises:
         TurnkeyVersionError:
-            If parsed version string does not resolve to 4 components.
+            If version string (after optional 'turnkey-' has been removed) can
+            not be split on '-' 3 times.
 
     """
     if turnkey_version.startswith("turnkey-"):
         turnkey_version = turnkey_version[8:]
-    tkl_v_list = turnkey_version.rsplit("-", 3)
     try:
-        tkl_version_tuple = (
-            tkl_v_list[0], tkl_v_list[1], tkl_v_list[2], tkl_v_list[3],
-        )
+        return tuple(turnkey_version.rsplit("-", 3))
     except IndexError as e:
         raise TurnkeyVersionError(
             "Malformed TurnKey version string: {turnkey_version}",
         ) from e
-    return tkl_version_tuple
 
 
-def _parse_turnkey_release(version: str) -> str:
-    """Get TurnKey version from full TurnKey version string.
+def get_turnkey_release(chrootfs: str | None = None) -> str | None:
+    """Read turnkey_version file and return full TurnKey version string.
 
-    Args:
-        version (str):
-            Full TurnKey version string, with optional 'turnkey-' prefix.
-            E.g. 'turnkey-core-19.0-trixie-amd64' or 'lamp-19.0-trixie-amd64'.
-
-    Returns:
-        str:
-            TurnKey version number. E.g. (from above arg examples) '19.0'.
-
-    """
-    return parse_tkl_version(version)[1]
-
-
-def get_turnkey_release(rootfs: str = "/") -> str | None:
-    """Read 'etc/turnkey_version' and return TurnKey version number.
-
-    Args:
-        rootfs (str):
-            'etc/turnkey_version' path prefix (default: '/')
+    Attempts to read /etc/turnkey_version and parse contents. If `chrootfs`
+    given, will seek file relative to chroot path. TurnKey version string is
+    not validated.
 
     Returns:
         str | None:
             Full TurnKey version string or None on error.
 
     """
-    turnkey_version = get_turnkey_version(rootfs=rootfs)
-    if turnkey_version:
-        return _parse_turnkey_release(turnkey_version)
-    return None
+    try:
+        v_file = "etc/turnkey_version"
+        v_file = join(chrootfs, v_file) if chroot else f"/{v_file}"
+        return _read_file(file_path=v_file)
+    except TurnkeyVersionError:
+        return None
 
 
 # used by turnkey-version
